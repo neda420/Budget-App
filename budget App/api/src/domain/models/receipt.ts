@@ -57,9 +57,10 @@ export class Receipt {
   }
 
   applyOcrResult(rawText: string): void {
-    void rawText;
-    // Basic stub
-    this.status = ProcessingStatus.OCR_PROCESSING;
+    const hasOcrText = rawText.trim().length > 0;
+    if (hasOcrText) {
+      this.status = ProcessingStatus.OCR_PROCESSING;
+    }
   }
 
   addLineItem(item: LineItem): void {
