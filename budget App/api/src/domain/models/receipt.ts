@@ -57,10 +57,13 @@ export class Receipt {
   }
 
   applyOcrResult(rawText: string): void {
-    const hasOcrText = rawText.trim().length > 0;
-    if (hasOcrText) {
-      this.status = ProcessingStatus.OCR_PROCESSING;
+    const normalizedRawText = rawText.trim();
+    if (normalizedRawText.length === 0) {
+      this.status = ProcessingStatus.FAILED;
+      return;
     }
+
+    this.status = ProcessingStatus.OCR_PROCESSING;
   }
 
   addLineItem(item: LineItem): void {

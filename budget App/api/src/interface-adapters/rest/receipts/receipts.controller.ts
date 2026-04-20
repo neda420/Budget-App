@@ -2,12 +2,13 @@ import { Controller, Delete, Get, Param, Post } from '@nestjs/common';
 
 @Controller('receipts')
 export class ReceiptsController {
+  private getScaffoldedReceipt(id: string) {
+    return { id, status: 'UPLOADED' };
+  }
+
   @Post()
   uploadReceipt() {
-    return {
-      id: 'scaffolded-receipt-id',
-      status: 'UPLOADED',
-    };
+    return this.getScaffoldedReceipt('scaffolded-receipt-id');
   }
 
   @Get()
@@ -17,7 +18,7 @@ export class ReceiptsController {
 
   @Get(':id')
   getReceiptById(@Param('id') id: string) {
-    return { id, status: 'UPLOADED' };
+    return this.getScaffoldedReceipt(id);
   }
 
   @Delete(':id')
@@ -27,6 +28,7 @@ export class ReceiptsController {
 
   @Get(':id/status')
   getReceiptStatus(@Param('id') id: string) {
-    return { id, status: 'UPLOADED' };
+    const receipt = this.getScaffoldedReceipt(id);
+    return { id: receipt.id, status: receipt.status };
   }
 }
