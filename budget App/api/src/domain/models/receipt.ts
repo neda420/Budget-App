@@ -1,4 +1,4 @@
-import { Result, ValidationError, TotalsMismatchError } from './shared';
+import { Result, TotalsMismatchError } from './shared';
 import { Money, ImageReference } from './value-objects';
 
 export enum ProcessingStatus {
@@ -9,7 +9,7 @@ export enum ProcessingStatus {
   CLASSIFYING = 'CLASSIFYING',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
-  DELETED = 'DELETED'
+  DELETED = 'DELETED',
 }
 
 export class LineItem {
@@ -20,7 +20,7 @@ export class LineItem {
     public quantity: number,
     public unitPrice: Money,
     public totalPrice: Money,
-    public categoryHint?: string
+    public categoryHint?: string,
   ) {}
 }
 
@@ -38,15 +38,31 @@ export class Receipt {
     public taxAmount?: Money,
     public issuedAt?: Date,
     public categoryId?: string,
-    public version: number = 0
+    public version: number = 0,
   ) {}
 
-  static create(id: string, userId: string, imageRef: ImageReference, idempotencyKey: string): Receipt {
-    return new Receipt(id, userId, ProcessingStatus.UPLOADED, imageRef, idempotencyKey);
+  static create(
+    id: string,
+    userId: string,
+    imageRef: ImageReference,
+    idempotencyKey: string,
+  ): Receipt {
+    return new Receipt(
+      id,
+      userId,
+      ProcessingStatus.UPLOADED,
+      imageRef,
+      idempotencyKey,
+    );
   }
 
   applyOcrResult(rawText: string): void {
-    // Basic stub
+    const normalizedRawText = rawText.trim();
+    if (normalizedRawText.length === 0) {
+      this.status = ProcessingStatus.FAILED;
+      return;
+    }
+
     this.status = ProcessingStatus.OCR_PROCESSING;
   }
 
@@ -56,7 +72,7 @@ export class Receipt {
 
   validateTotals(): Result<void, TotalsMismatchError> {
     if (!this.totalAmount) return Result.ok();
-    
+
     let sum = BigInt(0);
     for (const item of this.lineItems) {
       if (item.totalPrice.currency !== this.totalAmount.currency) {

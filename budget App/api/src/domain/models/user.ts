@@ -3,7 +3,7 @@ import { Email } from './value-objects';
 export enum SubscriptionLevel {
   FREE = 'FREE',
   PRO = 'PRO',
-  ENTERPRISE = 'ENTERPRISE'
+  ENTERPRISE = 'ENTERPRISE',
 }
 
 export class User {
@@ -13,10 +13,15 @@ export class User {
     public subscription: SubscriptionLevel,
     public defaultCurrency: string,
     public readonly createdAt: Date,
-    public updatedAt: Date
+    public updatedAt: Date,
   ) {}
 
-  static create(id: string, email: Email, subscription: SubscriptionLevel, currency: string = 'USD'): User {
+  static create(
+    id: string,
+    email: Email,
+    subscription: SubscriptionLevel,
+    currency: string = 'USD',
+  ): User {
     return new User(id, email, subscription, currency, new Date(), new Date());
   }
 
@@ -31,10 +36,14 @@ export class User {
 
   getReceiptQuota(): number {
     switch (this.subscription) {
-      case SubscriptionLevel.FREE: return 50;
-      case SubscriptionLevel.PRO: return 500;
-      case SubscriptionLevel.ENTERPRISE: return 5000;
-      default: return 50;
+      case SubscriptionLevel.FREE:
+        return 50;
+      case SubscriptionLevel.PRO:
+        return 500;
+      case SubscriptionLevel.ENTERPRISE:
+        return 5000;
+      default:
+        return 50;
     }
   }
 }
