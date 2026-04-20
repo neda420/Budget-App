@@ -1,6 +1,27 @@
 version: '3.8'
 
 services:
+  api:
+    image: node:20-alpine
+    container_name: budgetlens_api
+    working_dir: /app
+    command: sh -c "npm ci && npm run start:dev"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./api:/app
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/budgetlens
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://rabbitmq:5672
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
   postgres:
     image: postgres:15-alpine
     container_name: budgetlens_postgres
