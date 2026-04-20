@@ -1,0 +1,1684 @@
+BudgetLens: Enterprise Technical Specification & Architecture 
+Blueprint 
+1. Executive Overview 
+BudgetLens is an AI-native, event-driven expense intelligence platform designed for 
+high-volume concurrent processing of financial documents. The system employs Clean 
+Architecture with Domain-Driven Design (DDD) tactical patterns to ensure the core 
+business logic remains framework-agnostic, testable, and evolvable over a 5+ year 
+horizon. 
+Target Scale: 100,000+ MAU, 50,000+ receipts processed daily, 99.9% uptime SLA, 
+sub-200ms API response times (p95), and sub-30-second end-to-end receipt processing 
+latency. 
+ 
+2. Strategic Architectural Decisions 
+2.1 Architectural Style 
+●​ Primary: Clean Architecture (Robert C. Martin) with Ports & Adapters (Hexagonal 
+Architecture) 
+●​ Secondary: CQRS (Command Query Responsibility Segregation) for receipt 
+read/write operations 
+●​ Tertiary: Event Sourcing for receipt processing audit trails (optional in Phase 3) 
+2.2 Technology Stack Rationale 
+Table 
+Layer 
+Technology 
+Justification 
+Runtime 
+Node.js 20 LTS + TypeScript 5.3 
+Non-blocking I/O for concurrent uploads; strict typing for domain model 
+safety 
+Framework 
+NestJS 10.x 
+Native DI container, modular monolith structure (evolvable to microservices), 
+built-in OpenAPI, interceptors for cross-cutting concerns 
+ORM 
+Prisma 5.x 
+Type-safe database access, migration engine, connection pooling via 
+PgBouncer 
+Database 
+PostgreSQL 15+ 
+ACID compliance for financial data, JSONB for flexible LLM outputs, 
+partitioning for receipt history 
+Cache 
+Redis 7.x Cluster 
+Session storage, rate limiting counters, real-time analytics aggregation 
+Message Queue 
+RabbitMQ 3.12+ (Phase 1) → AWS SQS + SNS (Phase 3) 
+Complex routing in early stages; managed scaling at enterprise scale 
+Object Storage 
+AWS S3 with Intelligent-Tiering 
+Cost optimization for receipt images; lifecycle policies for archival 
+OCR Engine 
+AWS Textract (primary) + Tesseract (fallback) 
+Textract accuracy for financial docs; Tesseract for offline/PDF processing 
+LLM 
+OpenAI GPT-4o via Azure OpenAI Service 
+Structured output (JSON mode), enterprise SLA, PII filtering 
+Vector DB 
+Pinecone (Phase 3) 
+Semantic search for merchant categorization and duplicate detection 
+Observability 
+OpenTelemetry + Jaeger + Prometheus + Grafana 
+Distributed tracing, RED metrics (Rate, Errors, Duration), custom business 
+metrics 
+Logging 
+Winston → ELK Stack (Elasticsearch, Logstash, Kibana) 
+Structured JSON logs, centralized aggregation, correlation IDs 
+ 
+3. Domain Layer: Core Business Logic 
+3.1 Rich Domain Models (Framework-Agnostic) 
+Implement as plain TypeScript classes with zero external dependencies (no import 
+from NestJS, Prisma, or Node-specific modules). 
+3.1.1 Value Objects (Immutable, Validated) 
+TypeScriptCopy 
+// Value Objects with validation logic 
+class Email { 
+  private constructor(private readonly value: string) {} 
+  static create(email: string): Result<Email, ValidationError> { 
+    // RFC 5322 compliant regex 
+    // Normalize to lowercase 
+    // Prevent disposable email domains 
+  } 
+  getDomain(): string { /* ... */ } 
+  toString(): string { return this.value; } 
+} 
+ 
+class Money { 
+  private constructor( 
+    private readonly amount: bigint, // Use bigint to avoid floating-point 
+errors 
+    private readonly currency: CurrencyCode // ISO 4217 
+  ) {} 
+  static create(amount: number, currency: string): Result<Money, 
+DomainError>; 
+  add(other: Money): Result<Money, CurrencyMismatchError>; 
+  multiply(factor: number): Money; 
+  toJSON(): { amount: string; currency: string }; // Stringify bigint for 
+serialization 
+} 
+ 
+class ImageReference { 
+  private constructor( 
+    private readonly bucket: string, 
+    private readonly key: string, 
+    private readonly checksum: string, // SHA-256 for integrity 
+    private readonly encryptionVersion: string 
+  ) {} 
+  static create(bucket: string, file: Buffer): Result<ImageReference, 
+StorageError>; 
+  getUri(): string; 
+  getPresignedUrl(expirySeconds: number): string; 
+} 
+3.1.2 Entities (Identity-Based, Mutable State) 
+TypeScriptCopy 
+class User { 
+  private id: UserId; 
+  private email: Email; 
+  private subscription: SubscriptionLevel; 
+  private defaultCurrency: Currency; 
+  private createdAt: Date; 
+  private updatedAt: Date; 
+   
+  // Domain invariants 
+  changeSubscription(newLevel: SubscriptionLevel): void; 
+  canProcessReceipts(): boolean; // Business rule: check quota 
+  getReceiptQuota(): number; // Based on subscription tier 
+} 
+ 
+class Receipt { 
+  private id: ReceiptId; 
+  private userId: UserId; 
+  private status: ProcessingStatus; // UPLOADED | OCR_PENDING | 
+NLP_REFINING | CLASSIFIED | FAILED 
+  private imageRef: ImageReference; 
+  private merchantName?: MerchantName; 
+  private totalAmount?: Money; 
+  private taxAmount?: Money; 
+  private issuedAt?: Date; 
+  private categoryId?: CategoryId; 
+  private lineItems: LineItem[]; 
+  private idempotencyKey: string; // SHA-256 of userId + imageChecksum 
+  private version: number; // Optimistic locking 
+   
+  // Domain behavior 
+  applyOcrResult(rawText: string): void; 
+  applyNlpResult(structured: StructuredReceiptData): Result<void, 
+ValidationError>; 
+  assignCategory(category: ExpenseCategory): void; 
+  calculateSubtotal(): Money; 
+  validateTotals(): Result<void, TotalsMismatchError>; // Business rule: 
+sum(lineItems) + tax ≈ total 
+} 
+ 
+class LineItem { 
+  private id: LineItemId; 
+  private receiptId: ReceiptId; 
+  private description: string; 
+  private quantity: number; 
+  private unitPrice: Money; 
+  private totalPrice: Money; 
+  private categoryHint?: string; // Suggested by LLM 
+} 
+ 
+class ExpenseCategory { 
+  private id: CategoryId; 
+  private name: string; 
+  private color: string; // Hex code for UI 
+  private icon: string; // Lucide icon name 
+  private type: CategoryType; // SYSTEM | USER_DEFINED 
+  private userId?: UserId; // Null for system categories 
+  private parentId?: CategoryId; // Hierarchical support 
+  private vectorEmbedding?: number[]; // For semantic classification Phase 
+3 
+} 
+3.2 Design Patterns Implementation 
+3.2.1 Strategy Pattern: OCR Engine Swappability 
+TypeScriptCopy 
+interface OcrStrategy { 
+  readonly name: string; 
+  readonly supportedFormats: ImageFormat[]; 
+  process(imageRef: ImageReference): Promise<OcrResult>; 
+  estimateCost(imageSizeBytes: number): Money; 
+} 
+ 
+class TextractOcrStrategy implements OcrStrategy { /* AWS implementation 
+*/ } 
+class TesseractOcrStrategy implements OcrStrategy { /* Local/OSS 
+implementation */ } 
+class AzureFormRecognizerStrategy implements OcrStrategy { /* Future 
+expansion */ } 
+ 
+// Factory with configuration-driven selection 
+class OcrStrategyFactory { 
+  create(strategyName: string): OcrStrategy; 
+  getDefault(): OcrStrategy; 
+} 
+3.2.2 Repository Pattern (Port) 
+TypeScriptCopy 
+// Domain-defined ports (interfaces) 
+interface ReceiptRepository { 
+  findById(id: ReceiptId): Promise<Receipt | null>; 
+  findByUserId(userId: UserId, pagination: Pagination): 
+Promise<PaginatedResult<Receipt>>; 
+  findByIdempotencyKey(key: string): Promise<Receipt | null>; // Critical 
+for duplicate prevention 
+  save(receipt: Receipt): Promise<void>; 
+  updateStatus(id: ReceiptId, status: ProcessingStatus, version: number): 
+Promise<boolean>; // Optimistic locking 
+  delete(id: ReceiptId): Promise<void>; 
+} 
+ 
+interface UnitOfWork { 
+  begin(): Promise<void>; 
+  commit(): Promise<void>; 
+  rollback(): Promise<void>; 
+  getReceiptRepository(): ReceiptRepository; 
+  getUserRepository(): UserRepository; 
+  // ... other repositories 
+} 
+3.2.3 Domain Events (for Event-Driven Architecture) 
+TypeScriptCopy 
+abstract class DomainEvent { 
+  readonly occurredAt: Date = new Date(); 
+  abstract readonly eventType: string; 
+  abstract readonly aggregateId: string; 
+} 
+ 
+class ReceiptUploadedEvent extends DomainEvent { 
+  readonly eventType = 'ReceiptUploaded'; 
+  constructor( 
+    readonly aggregateId: string, // receiptId 
+    readonly userId: string, 
+    readonly imageRef: ImageReference, 
+    readonly idempotencyKey: string, 
+    readonly uploadedAt: Date 
+  ) { super(); } 
+} 
+ 
+class OcrCompletedEvent extends DomainEvent { 
+  readonly eventType = 'OcrCompleted'; 
+  constructor( 
+    readonly aggregateId: string, 
+    readonly rawText: string, 
+    readonly confidenceScore: number, 
+    readonly engineUsed: string 
+  ) { super(); } 
+} 
+ 
+class NlpRefinementCompletedEvent extends DomainEvent { 
+  readonly eventType = 'NlpRefinementCompleted'; 
+  constructor( 
+    readonly aggregateId: string, 
+    readonly structuredData: StructuredReceiptData, 
+    readonly processingDurationMs: number 
+  ) { super(); } 
+} 
+ 
+4. Application Layer: Use Cases & Orchestration 
+4.1 Use Case Implementation Pattern 
+Each use case is a single-responsibility class implementing the Command or Query 
+pattern: 
+TypeScriptCopy 
+// Commands (write operations) 
+class UploadReceiptUseCase { 
+  constructor( 
+    private readonly receiptRepo: ReceiptRepository, 
+    private readonly uow: UnitOfWork, 
+    private readonly eventBus: EventBus, 
+    private readonly storageService: StoragePort, 
+    private readonly idempotencyService: IdempotencyPort 
+  ) {} 
+   
+  async execute(dto: UploadReceiptDto): Promise<Result<ReceiptDto, 
+ApplicationError>> { 
+    // 1. Validate idempotency key (X-Idempotency-Key header) 
+    // 2. Check user quota (domain service) 
+    // 3. Upload to S3 with server-side encryption (SSE-KMS) 
+    // 4. Create Receipt aggregate 
+    // 5. Persist via Unit of Work 
+    // 6. Emit ReceiptUploadedEvent 
+    // 7. Return DTO with 202 Accepted status 
+  } 
+} 
+ 
+class GetReceiptAnalyticsUseCase { 
+  constructor( 
+    private readonly receiptRepo: ReceiptRepository, 
+    private readonly cacheService: CachePort 
+  ) {} 
+   
+  async execute(query: AnalyticsQueryDto): Promise<AnalyticsDto> { 
+    // CQRS: Read from materialized view or cache 
+    // Cache key: `analytics:${userId}:${month}:${currency}` 
+  } 
+} 
+4.2 Input/Output Ports (Application Boundary) 
+TypeScriptCopy 
+// Incoming ports (driven by Interface Adapters) 
+interface UploadReceiptPort { 
+  execute(dto: UploadReceiptDto): Promise<Result<ReceiptDto, 
+ApplicationError>>; 
+} 
+ 
+// Outgoing ports (driven by Infrastructure) 
+interface StoragePort { 
+  upload(file: Buffer, metadata: StorageMetadata): 
+Promise<ImageReference>; 
+  delete(ref: ImageReference): Promise<void>; 
+  generatePresignedUrl(ref: ImageReference, expiry: number): 
+Promise<string>; 
+} 
+ 
+interface EventBus { 
+  publish(event: DomainEvent): Promise<void>; 
+  subscribe(eventType: string, handler: EventHandler): void; 
+} 
+ 
+interface IdempotencyPort { 
+  checkAndReserve(key: string, ttlSeconds: number): Promise<boolean>; 
+  release(key: string): Promise<void>; 
+} 
+ 
+5. Interface Adapters Layer 
+5.1 REST API Design (Primary Interface) 
+Base Path: /api/v1 
+5.1.1 Endpoints 
+Table 
+Method 
+Path 
+Description 
+Auth 
+Idempotency 
+POST 
+/auth/register 
+User registration 
+Public 
+- 
+POST 
+/auth/login 
+OAuth2/OIDC login 
+Public 
+- 
+POST 
+/auth/refresh 
+Token refresh 
+Public 
+- 
+POST 
+/receipts 
+Upload receipt 
+Bearer 
+X-Idempotency-Key 
+GET 
+/receipts 
+List receipts 
+Bearer 
+- 
+GET 
+/receipts/:id 
+Get receipt details 
+Bearer 
+- 
+DELETE 
+/receipts/:id 
+Soft delete receipt 
+Bearer 
+- 
+GET 
+/receipts/:id/status 
+Processing status (SSE) 
+Bearer 
+- 
+GET 
+/categories 
+List categories 
+Bearer 
+- 
+POST 
+/categories 
+Create custom category 
+Bearer 
+- 
+GET 
+/analytics/dashboard 
+Dashboard metrics 
+Bearer 
+- 
+GET 
+/analytics/spending-tre
+nds 
+Time-series analysis 
+Bearer 
+- 
+5.1.2 Request/Response Contracts 
+TypeScriptCopy 
+// POST /receipts 
+interface UploadReceiptRequest { 
+  file: MultipartFile; // Max 10MB, JPEG/PNG/PDF 
+  metadata?: { 
+    currency?: string; // ISO 4217, default from user profile 
+    notes?: string; // Max 500 chars 
+    tags?: string[]; // Max 5 tags 
+  }; 
+} 
+ 
+interface UploadReceiptResponse { 
+  id: string; // UUID v4 
+  status: 'UPLOADED' | 'PROCESSING' | 'COMPLETED' | 'FAILED'; 
+  idempotencyKey: string; 
+  estimatedProcessingTime: number; // seconds 
+  presignedUrl: string; // Temporary access to uploaded image 
+  createdAt: string; // ISO 8601 
+} 
+ 
+// Error Responses (RFC 7807 Problem Details) 
+interface ProblemDetail { 
+  type: string; // URI reference 
+  title: string; 
+  status: number; 
+  detail: string; 
+  instance: string; // Request path 
+  traceId: string; // OpenTelemetry trace ID 
+  errors?: Record<string, string[]>; // Validation errors 
+} 
+5.2 GraphQL API (Alternative/Complementary) 
+Schema Design (SDL): 
+graphqlCopy 
+type Receipt { 
+  id: ID! 
+  status: ProcessingStatus! 
+  merchantName: String 
+  totalAmount: Money 
+  taxAmount: Money 
+  issuedAt: DateTime 
+  category: ExpenseCategory 
+  lineItems: [LineItem!]! 
+  imageUrl: String! @auth 
+  processingHistory: [ProcessingStep!]! 
+  createdAt: DateTime! 
+} 
+ 
+type Mutation { 
+  uploadReceipt(file: Upload!, metadata: ReceiptMetadataInput): Receipt! 
+    @rateLimit(max: 10, window: "1m") 
+    @idempotency(key: "X-Idempotency-Key") 
+   
+  deleteReceipt(id: ID!): Boolean! 
+} 
+ 
+type Subscription { 
+  receiptProcessed(receiptId: ID!): Receipt! 
+  receiptStatusChanged(userId: ID!): ReceiptStatusUpdate! 
+} 
+5.3 OpenAPI 3.1 Specification 
+Auto-generated via NestJS Swagger with custom decorators: 
+TypeScriptCopy 
+@ApiTags('Receipts') 
+@ApiBearerAuth() 
+@ApiHeader({ 
+  name: 'X-Idempotency-Key', 
+  description: 'UUID for idempotent upload processing', 
+  required: true 
+}) 
+@ApiResponse({ 
+  status: 409, 
+  description: 'Duplicate receipt detected', 
+  type: DuplicateReceiptErrorDto 
+}) 
+@Controller('receipts') 
+export class ReceiptController { /* ... */ } 
+ 
+6. Infrastructure Layer 
+6.1 Database Schema (Prisma) 
+prismaCopy 
+// schema.prisma 
+generator client { 
+  provider = "prisma-client-js" 
+  previewFeatures = ["postgresqlExtensions", "fullTextSearch"] 
+} 
+ 
+datasource db { 
+  provider = "postgresql" 
+  url      = env("DATABASE_URL") 
+  extensions = [uuid_ossp(map: "uuid-ossp"), vector(map: "pgvector")] // 
+For Phase 3 
+} 
+ 
+model User { 
+  id                String            @id @default(uuid()) 
+  email             String            @unique 
+  emailVerified     Boolean           @default(false) 
+  passwordHash      String?           // Nullable for OAuth-only users 
+  subscriptionLevel SubscriptionLevel @default(FREE) 
+  defaultCurrency   String            @default("USD") 
+  monthlyQuota      Int               @default(50) 
+  quotaResetDate    DateTime 
+  createdAt         DateTime          @default(now()) 
+  updatedAt         DateTime          @updatedAt 
+   
+  receipts          Receipt[] 
+  categories        ExpenseCategory[] 
+  sessions          Session[] 
+   
+  @@index([email]) 
+  @@index([subscriptionLevel]) 
+  @@map("users") 
+} 
+ 
+model Receipt { 
+  id                String            @id @default(uuid()) 
+  userId            String 
+  status            ProcessingStatus  @default(UPLOADED) 
+   
+  // Storage 
+  imageKey          String            @unique 
+  imageBucket       String 
+  imageChecksum     String            @unique // SHA-256 
+  encryptionKeyId   String            // KMS key reference 
+   
+  // Extracted Data (nullable until processing completes) 
+  merchantName      String? 
+  merchantAddress   String? 
+  totalAmount       Decimal?          @db.Decimal(19, 4) // High precision 
+  taxAmount         Decimal?          @db.Decimal(19, 4) 
+  subtotalAmount    Decimal?          @db.Decimal(19, 4) 
+  currency          String? 
+  issuedAt          DateTime? 
+  processedAt       DateTime? 
+   
+  // Relationships 
+  user              User              @relation(fields: [userId], 
+references: [id], onDelete: Cascade) 
+  categoryId        String? 
+  category          ExpenseCategory?  @relation(fields: [categoryId], 
+references: [id]) 
+  lineItems         LineItem[] 
+   
+  // Idempotency & Concurrency 
+  idempotencyKey    String            @unique 
+  version           Int               @default(0) // Optimistic locking 
+   
+  // Metadata 
+  ocrEngine         String? 
+  ocrConfidence     Float? 
+  nlpModelVersion   String? 
+  processingDurationMs Int? 
+   
+  createdAt         DateTime          @default(now()) 
+  updatedAt         DateTime          @updatedAt 
+   
+  @@index([userId, createdAt(sort: Desc)]) 
+  @@index([status, createdAt]) // For worker queries 
+  @@index([idempotencyKey]) 
+  @@map("receipts") 
+} 
+ 
+model LineItem { 
+  id            String    @id @default(uuid()) 
+  receiptId     String 
+  description   String 
+  quantity      Decimal   @db.Decimal(10, 3) 
+  unitPrice     Decimal   @db.Decimal(19, 4) 
+  totalPrice    Decimal   @db.Decimal(19, 4) 
+  categoryHint  String? 
+   
+  receipt       Receipt   @relation(fields: [receiptId], references: [id], 
+onDelete: Cascade) 
+   
+  @@index([receiptId]) 
+  @@map("line_items") 
+} 
+ 
+model ExpenseCategory { 
+  id          String    @id @default(uuid()) 
+  name        String 
+  color       String    @default("#3B82F6") 
+  icon        String    @default("receipt") 
+  type        CategoryType @default(SYSTEM) 
+  userId      String? 
+  parentId    String? 
+   
+  user        User?     @relation(fields: [userId], references: [id], 
+onDelete: Cascade) 
+  receipts    Receipt[] 
+  parent      ExpenseCategory? @relation("CategoryHierarchy", fields: 
+[parentId], references: [id]) 
+  children    ExpenseCategory[] @relation("CategoryHierarchy") 
+   
+  // Phase 3: Vector embedding for AI classification 
+  embedding   Unsupported("vector(1536)")? 
+   
+  @@unique([userId, name]) 
+  @@index([userId]) 
+  @@index([type]) 
+  @@map("expense_categories") 
+} 
+ 
+model Session { 
+  id        String   @id @default(uuid()) 
+  userId    String 
+  token     String   @unique 
+  expiresAt DateTime 
+  createdAt DateTime @default(now()) 
+   
+  user      User     @relation(fields: [userId], references: [id], 
+onDelete: Cascade) 
+   
+  @@index([token]) 
+  @@index([expiresAt]) 
+  @@map("sessions") 
+} 
+ 
+enum SubscriptionLevel { 
+  FREE 
+  PRO 
+  ENTERPRISE 
+} 
+ 
+enum ProcessingStatus { 
+  UPLOADED 
+  OCR_PENDING 
+  OCR_PROCESSING 
+  NLP_REFINING 
+  CLASSIFYING 
+  COMPLETED 
+  FAILED 
+  DELETED 
+} 
+ 
+enum CategoryType { 
+  SYSTEM 
+  USER_DEFINED 
+} 
+6.2 AWS S3 Configuration 
+TypeScriptCopy 
+// Infrastructure as Code (CDK or Terraform) 
+const receiptBucket = new s3.Bucket(this, 'BudgetLensReceipts', { 
+  bucketName: 'budgetlens-receipts-prod', 
+  encryption: s3.BucketEncryption.KMS_MANAGED, 
+  blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL, 
+  cors: [{ 
+    allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET], 
+    allowedOrigins: ['https://app.budgetlens.io'], 
+    allowedHeaders: ['Content-Type', 'Authorization'], 
+    maxAge: 3000 
+  }], 
+  lifecycleRules: [ 
+    { 
+      transitions: [ 
+        { storageClass: s3.StorageClass.INFREQUENT_ACCESS, 
+transitionAfter: cdk.Duration.days(90) }, 
+        { storageClass: s3.StorageClass.GLACIER, transitionAfter: 
+cdk.Duration.days(365) } 
+      ], 
+      expiration: cdk.Duration.days(2555) // 7 years for tax compliance 
+    } 
+  ], 
+  versioned: true // For audit trail 
+}); 
+6.3 Redis Configuration 
+TypeScriptCopy 
+// redis.config.ts 
+export const redisConfig: RedisModuleOptions = { 
+  type: 'cluster', 
+  rootNodes: [ 
+    { url: 'redis://cluster-node-1:6379' }, 
+    { url: 'redis://cluster-node-2:6379' } 
+  ], 
+  options: { 
+    maxRetriesPerRequest: 3, 
+    enableReadyCheck: true, 
+    // Key prefixes for organization 
+    keyPrefix: 'budgetlens:' 
+  } 
+}; 
+ 
+// Cache strategies 
+const CACHE_TTL = { 
+  SESSION: 86400,        // 24 hours 
+  RECEIPT_LIST: 300,     // 5 minutes 
+  ANALYTICS: 3600,       // 1 hour 
+  RATE_LIMIT: 60,        // 1 minute window 
+  IDEMPOTENCY: 86400     // 24 hours 
+}; 
+ 
+7. "The Lens": AI Processing Pipeline 
+7.1 Event-Driven Architecture 
+plainCopy 
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐     
+┌──────────────┐ 
+│   API GW    │────▶│  Ingestion   │────▶│   RabbitMQ  │────▶│  OCR Worker  
+│ 
+│  (Upload)   │     │   Service    │     │  (receipts  │     │  (Textract)  
+│ 
+└─────────────┘     └──────────────┘     │   queue)    │     
+└──────┬───────┘ 
+                                         └─────────────┘            │ 
+                                                                    ▼ 
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐     
+┌──────────────┐ 
+│  WebSocket  │◀────│  Notifier    │◀────│   Receipt   │◀────│  NLP 
+Refiner │ 
+│   Gateway   │     │   Service    │     │   Service   │     │   (GPT-4o)   
+│ 
+└─────────────┘     └──────────────┘     └─────────────┘     
+└──────┬───────┘ 
+                                                                    │ 
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐            │ 
+│  Analytics  │◀────│  Classifier  │◀────│  Vector DB  │◀───────────┘ 
+│   Engine    │     │  (Phase 3)   │     │  (Pinecone) │ 
+└─────────────┘     └──────────────┘     └─────────────┘ 
+7.2 Service Specifications 
+7.2.1 Ingestion Service (NestJS HTTP Handler) 
+TypeScriptCopy 
+@Controller('receipts') 
+export class ReceiptIngestionController { 
+  @Post() 
+  @UseInterceptors(FileInterceptor('file', { 
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB 
+    fileFilter: imageFileFilter // JPEG, PNG, PDF only 
+  })) 
+  @UseGuards(JwtAuthGuard, RateLimitGuard) 
+  @ApiConsumes('multipart/form-data') 
+  async upload( 
+    @UploadedFile() file: Express.Multer.File, 
+    @Body() metadata: UploadMetadataDto, 
+    @Headers('x-idempotency-key') idempotencyKey: string, 
+    @CurrentUser() user: UserPayload 
+  ): Promise<UploadReceiptResponse> { 
+    // 1. Validate idempotency key format (UUID v4) 
+    // 2. Check rate limit: 10 uploads/minute for FREE, 100 for PRO 
+    // 3. Stream file to S3 (don't buffer in memory) 
+    // 4. Generate SHA-256 checksum 
+    // 5. Create Receipt aggregate with status UPLOADED 
+    // 6. Persist to DB within Unit of Work 
+    // 7. Publish ReceiptUploadedEvent to RabbitMQ 
+    // 8. Return 202 Accepted with polling URL / SSE endpoint 
+  } 
+} 
+7.2.2 OCR Worker (Consumer) 
+TypeScriptCopy 
+@Injectable() 
+export class OcrWorker implements OnModuleInit { 
+  constructor( 
+    private readonly ocrStrategy: OcrStrategy, 
+    private readonly receiptRepo: ReceiptRepository, 
+    private readonly eventBus: EventBus, 
+    private readonly metrics: MetricsService 
+  ) {} 
+   
+  @RabbitSubscribe({ 
+    exchange: 'receipts.exchange', 
+    routingKey: 'receipt.uploaded', 
+    queue: 'ocr-processing-queue', 
+    queueOptions: { 
+      durable: true, 
+      arguments: { 
+        'x-dead-letter-exchange': 'receipts.dlx', 
+        'x-dead-letter-routing-key': 'ocr.failed' 
+      } 
+    } 
+  }) 
+  async handleReceiptUploaded(event: ReceiptUploadedEvent): Promise<void> 
+{ 
+    const timer = this.metrics.startTimer('ocr_processing_duration'); 
+     
+    try { 
+      // 1. Update status to OCR_PROCESSING (optimistic locking) 
+      await this.receiptRepo.updateStatus( 
+        ReceiptId.create(event.aggregateId), 
+        ProcessingStatus.OCR_PROCESSING, 
+        /* version */ expect.any(Number) 
+      ); 
+       
+      // 2. Download image from S3 (stream to temp file) 
+      // 3. Execute OCR strategy 
+      const result = await this.ocrStrategy.process(event.imageRef); 
+       
+      // 4. Validate confidence threshold (> 80%) 
+      if (result.confidence < 0.8) { 
+        // Fallback to secondary strategy or manual review queue 
+      } 
+       
+      // 5. Emit OcrCompletedEvent 
+      await this.eventBus.publish(new OcrCompletedEvent( 
+        event.aggregateId, 
+        result.rawText, 
+        result.confidence, 
+        this.ocrStrategy.name 
+      )); 
+       
+      this.metrics.increment('ocr_success_total'); 
+    } catch (error) { 
+      this.metrics.increment('ocr_failure_total'); 
+      // Message goes to DLQ after 3 retries 
+      throw error; // Requeue for retry with backoff 
+    } finally { 
+      timer.end(); 
+    } 
+  } 
+} 
+7.2.3 NLP Refiner (GPT-4o Integration) 
+TypeScriptCopy 
+interface StructuredReceiptData { 
+  merchant: { 
+    name: string; 
+    address?: string; 
+    phone?: string; 
+    taxId?: string; 
+  }; 
+  dates: { 
+    issuedAt: string; // ISO 8601 
+    paymentMethod?: string; 
+  }; 
+  financials: { 
+    currency: string; 
+    subtotal: number; 
+    tax: number; 
+    total: number; 
+    tip?: number; 
+  }; 
+  lineItems: Array<{ 
+    description: string; 
+    quantity: number; 
+    unitPrice: number; 
+    totalPrice: number; 
+    category?: string; 
+  }>; 
+  confidence: { 
+    merchant: number; 
+    total: number; 
+    date: number; 
+  }; 
+} 
+ 
+@Injectable() 
+export class Gpt4oNlpRefiner { 
+  private readonly client: AzureOpenAI; 
+   
+  async refine(rawText: string, imageRef: ImageReference): 
+Promise<StructuredReceiptData> { 
+    const systemPrompt = `You are a financial document parser. Extract 
+structured data from OCR text. 
+Rules: 
+- Currency must be ISO 4217 code (USD, EUR, etc.) 
+- Dates must be ISO 8601 
+- Prices must be decimal numbers (not formatted strings) 
+- If a field is uncertain, set confidence < 0.9 
+- Never hallucinate data not present in the text`; 
+     
+    const response = await this.client.chat.completions.create({ 
+      model: 'gpt-4o', 
+      messages: [ 
+        { role: 'system', content: systemPrompt }, 
+        { role: 'user', content: `Parse this receipt OCR 
+text:\n\n${rawText}` } 
+      ], 
+      response_format: { type: 'json_object' }, 
+      temperature: 0.1, // Low creativity for extraction 
+      max_tokens: 4096 
+    }); 
+     
+    // Validate JSON schema using Zod 
+    const parsed = 
+ReceiptSchema.parse(JSON.parse(response.choices[0].message.content)); 
+     
+    // PII scrubbing: Remove phone numbers, emails from merchant data if 
+present 
+    return this.scrubPii(parsed); 
+  } 
+} 
+7.2.4 Classification Engine (Phase 3) 
+TypeScriptCopy 
+@Injectable() 
+export class VectorClassificationEngine { 
+  constructor( 
+    private readonly embeddingService: OpenAIEmbeddingService, 
+    private readonly vectorStore: PineconeService, 
+    private readonly categoryRepo: CategoryRepository 
+  ) {} 
+   
+  async classify(receipt: Receipt): Promise<CategoryId> { 
+    // 1. Generate embedding from merchant name + line items 
+    const text = `${receipt.merchantName} ${receipt.lineItems.map(i => 
+i.description).join(' ')}`; 
+    const embedding = await this.embeddingService.create(text); 
+     
+    // 2. Semantic search against user's categories + system categories 
+    const results = await this.vectorStore.query({ 
+      vector: embedding, 
+      filter: { 
+        $or: [ 
+          { userId: receipt.userId }, 
+          { type: 'SYSTEM' } 
+        ] 
+      }, 
+      topK: 3 
+    }); 
+     
+    // 3. Apply confidence threshold 
+    if (results[0].score > 0.85) { 
+      return CategoryId.create(results[0].id); 
+    } 
+     
+    // 4. Fallback to heuristic rules (regex patterns for known merchants) 
+    return this.heuristicClassify(receipt); 
+  } 
+} 
+ 
+8. Security Architecture 
+8.1 Authentication & Authorization 
+TypeScriptCopy 
+// OAuth2/OIDC Configuration 
+@Module({ 
+  imports: [ 
+    PassportModule.register({ defaultStrategy: 'jwt' }), 
+    JwtModule.register({ 
+      secret: process.env.JWT_SECRET, // HS256 for internal, RS256 for 
+external 
+      signOptions: {  
+        expiresIn: '15m', 
+        issuer: 'budgetlens.io', 
+        audience: 'budgetlens.api' 
+      } 
+    }), 
+    // OIDC providers 
+    GoogleOAuthModule, 
+    MicrosoftEntraModule // Enterprise SSO 
+  ] 
+}) 
+export class AuthModule {} 
+ 
+// RBAC + ABAC Guards 
+@Injectable() 
+export class SubscriptionGuard implements CanActivate { 
+  canActivate(context: ExecutionContext): boolean { 
+    const requiredLevel = this.reflector.get<SubscriptionLevel>( 
+      'subscription', 
+      context.getHandler() 
+    ); 
+    const user = context.switchToHttp().getRequest().user; 
+    return user.subscriptionLevel >= requiredLevel; 
+  } 
+} 
+8.2 Data Protection 
+TypeScriptCopy 
+// AES-256-GCM for sensitive fields at application level 
+@Injectable() 
+export class FieldEncryptionService { 
+  private readonly algorithm = 'aes-256-gcm'; 
+  private readonly keyLength = 32; 
+  private readonly ivLength = 16; 
+  private readonly authTagLength = 16; 
+   
+  encrypt(plaintext: string, keyId: string): EncryptedField { 
+    const iv = randomBytes(this.ivLength); 
+    const cipher = createCipheriv(this.algorithm, this.getKey(keyId), iv); 
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), 
+cipher.final()]); 
+    const authTag = cipher.getAuthTag(); 
+     
+    return { 
+      ciphertext: Buffer.concat([encrypted, authTag]).toString('base64'), 
+      iv: iv.toString('base64'), 
+      keyId, 
+      algorithm: this.algorithm 
+    }; 
+  } 
+   
+  // Apply to: merchant tax IDs, full receipt images (optional), user PII 
+} 
+ 
+// S3 Server-Side Encryption with KMS 
+const putObjectParams = { 
+  Bucket: 'budgetlens-receipts', 
+  Key: receiptId, 
+  Body: fileStream, 
+  ServerSideEncryption: 'aws:kms', 
+  SSEKMSKeyId: process.env.KMS_KEY_ID, 
+  Metadata: { 
+    'x-amz-meta-checksum': sha256Hash, 
+    'x-amz-meta-user-id': userId 
+  } 
+}; 
+8.3 Rate Limiting & DDoS Protection 
+TypeScriptCopy 
+// Rate limiting tiers 
+const RATE_LIMITS = { 
+  FREE: { requests: 100, window: 60 },      // 100 req/min 
+  PRO: { requests: 1000, window: 60 },      // 1000 req/min 
+  ENTERPRISE: { requests: 10000, window: 60 } // 10k req/min 
+}; 
+ 
+// Implementation using Redis sliding window 
+@Injectable() 
+export class RateLimitService { 
+  async checkLimit(userId: string, tier: SubscriptionLevel): 
+Promise<boolean> { 
+    const key = `ratelimit:${userId}`; 
+    const limit = RATE_LIMITS[tier]; 
+     
+    const pipeline = this.redis.pipeline(); 
+    pipeline.incr(key); 
+    pipeline.expire(key, limit.window); 
+    const [current] = await pipeline.exec(); 
+     
+    return current <= limit.requests; 
+  } 
+} 
+ 
+// API Gateway (Kong/AWS API Gateway) layer: 
+// - IP-based rate limiting: 100 req/min anonymous 
+// - WAF rules for SQL injection, XSS 
+// - Geo-blocking if needed 
+8.4 Idempotency Implementation 
+TypeScriptCopy 
+@Injectable() 
+export class RedisIdempotencyService implements IdempotencyPort { 
+  async checkAndReserve(key: string, ttlSeconds: number): Promise<boolean> 
+{ 
+    // NX = Only set if not exists 
+    const result = await this.redis.set( 
+      `idempotency:${key}`, 
+      'pending', 
+      'EX', 
+      ttlSeconds, 
+      'NX' 
+    ); 
+    return result === 'OK'; 
+  } 
+   
+  async confirm(key: string, response: string): Promise<void> { 
+    await this.redis.set( 
+      `idempotency:${key}`, 
+      response, 
+      'EX', 
+      86400 // Keep completed keys for 24h 
+    ); 
+  } 
+} 
+ 
+9. Observability & Operations 
+9.1 Structured Logging (Winston) 
+TypeScriptCopy 
+// logger.config.ts 
+const logger = winston.createLogger({ 
+  level: process.env.LOG_LEVEL || 'info', 
+  format: winston.format.combine( 
+    winston.format.timestamp(), 
+    winston.format.errors({ stack: true }), 
+    winston.format.json() 
+  ), 
+  defaultMeta: { 
+    service: 'budgetlens-api', 
+    version: process.env.APP_VERSION, 
+    environment: process.env.NODE_ENV 
+  }, 
+  transports: [ 
+    new winston.transports.Console(), 
+    new winston.transports.File({ filename: 'logs/error.log', level: 
+'error' }), 
+    new winston.transports.File({ filename: 'logs/combined.log' }) 
+  ] 
+}); 
+ 
+// Correlation ID injection via NestJS interceptor 
+@Injectable() 
+export class CorrelationIdInterceptor implements NestInterceptor { 
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> 
+{ 
+    const request = context.switchToHttp().getRequest(); 
+    const correlationId = request.headers['x-correlation-id'] || uuidv4(); 
+     
+    return next.handle().pipe( 
+      tap(() => { 
+        logger.info('Request completed', { 
+          correlationId, 
+          path: request.url, 
+          method: request.method, 
+          userAgent: request.headers['user-agent'] 
+        }); 
+      }) 
+    ); 
+  } 
+} 
+9.2 Distributed Tracing (OpenTelemetry) 
+TypeScriptCopy 
+// tracing.ts 
+import { NodeSDK } from '@opentelemetry/sdk-node'; 
+import { JaegerExporter } from '@opentelemetry/exporter-jaeger'; 
+import { RedisInstrumentation } from 
+'@opentelemetry/instrumentation-redis'; 
+import { PrismaInstrumentation } from '@prisma/instrumentation'; 
+import { RabbitMQInstrumentation } from 
+'@opentelemetry/instrumentation-amqplib'; 
+ 
+const sdk = new NodeSDK({ 
+  traceExporter: new JaegerExporter({ 
+    endpoint: process.env.JAEGER_ENDPOINT 
+  }), 
+  instrumentations: [ 
+    new HttpInstrumentation(), 
+    new NestInstrumentation(), 
+    new PrismaInstrumentation(), 
+    new RedisInstrumentation(), 
+    new RabbitMQInstrumentation() 
+  ], 
+  resource: new Resource({ 
+    [SemanticResourceAttributes.SERVICE_NAME]: 'budgetlens-api', 
+    [SemanticResourceAttributes.SERVICE_VERSION]: '1.0.0' 
+  }) 
+}); 
+ 
+// Custom spans for AI pipeline 
+const span = tracer.startSpan('ocr-processing'); 
+span.setAttribute('ocr.engine', 'textract'); 
+span.setAttribute('receipt.id', receiptId); 
+// ... processing ... 
+span.setAttribute('ocr.confidence', confidence); 
+span.end(); 
+9.3 Health Checks & Readiness 
+TypeScriptCopy 
+@Controller('health') 
+export class HealthController { 
+  constructor( 
+    private health: HealthCheckService, 
+    private db: PrismaHealthIndicator, 
+    private redis: RedisHealthIndicator, 
+    private storage: S3HealthIndicator, 
+    private queue: RabbitMQHealthIndicator 
+  ) {} 
+   
+  @Get('live') 
+  @HealthCheck() 
+  liveness() { 
+    return this.health.check([]); 
+  } 
+   
+  @Get('ready') 
+  @HealthCheck() 
+  readiness() { 
+    return this.health.check([ 
+      () => this.db.pingCheck('database'), 
+      () => this.redis.pingCheck('cache'), 
+      () => this.storage.check('s3', { bucket: 'budgetlens-receipts' }), 
+      () => this.queue.check('rabbitmq', { timeout: 3000 }) 
+    ]); 
+  } 
+} 
+ 
+10. Implementation Phases 
+Phase 1: MVP  
+Goal: Core functionality with manual entry, secure auth, basic dashboard 
+Deliverables: 
+●​ [ ] Domain models (User, Receipt, Category) with full unit test coverage 
+●​ [ ] PostgreSQL schema with Prisma migrations 
+●​ [ ] REST API with OpenAPI docs (Auth, CRUD receipts, categories) 
+●​ [ ] OAuth2/OIDC integration (Google, GitHub) 
+●​ [ ] Basic React frontend (Next.js 14) with receipt form 
+●​ [ ] Dashboard with monthly spending summary 
+●​ [ ] Docker Compose local development environment 
+●​ [ ] GitHub Actions CI (lint, test, build) 
+Architecture: Modular monolith, synchronous processing, in-memory event bus 
+Phase 2: Automation 
+Goal: AI-powered receipt scanning and background processing 
+Deliverables: 
+●​ [ ] S3 integration with presigned URLs 
+●​ [ ] RabbitMQ message broker 
+●​ [ ] OCR Strategy pattern with AWS Textract 
+●​ [ ] Background workers (BullMQ or native RabbitMQ consumers) 
+●​ [ ] Receipt processing status polling / SSE 
+●​ [ ] Image optimization (thumbnail generation via Sharp) 
+●​ [ ] Idempotency keys for upload deduplication 
+●​ [ ] Redis caching for session and analytics 
+●​ [ ] Integration tests with Testcontainers (Postgres, Redis, RabbitMQ) 
+Architecture: Event-driven, async pipeline, separate worker processes 
+Phase 3: Intelligence Goal: LLM categorization, predictive insights, enterprise 
+features 
+Deliverables: 
+●​ [ ] GPT-4o integration via Azure OpenAI 
+●​ [ ] Vector embeddings for semantic categorization (Pinecone) 
+●​ [ ] Multi-currency support with real-time exchange rates (ExchangeRate-API) 
+●​ [ ] Predictive spending alerts (anomaly detection via statistical models) 
+●​ [ ] Advanced analytics (trend forecasting, budget recommendations) 
+●​ [ ] WebSocket subscriptions for real-time updates 
+●​ [ ] Data export (CSV, PDF reports) 
+●​ [ ] GDPR compliance: data export/deletion endpoints 
+●​ [ ] Performance optimization: DB query analysis, Redis caching strategy 
+refinement 
+Architecture: CQRS for analytics, microservices extraction candidate evaluation 
+ 
+11. Testing Strategy 
+11.1 Unit Tests (Jest) - Target: 100% Domain/Application Coverage 
+TypeScriptCopy 
+// Domain test example 
+describe('Receipt', () => { 
+  it('should reject totals that do not match line items plus tax', () => { 
+    const receipt = Receipt.create(/* valid data */); 
+    receipt.addLineItem(LineItem.create({ description: 'Coffee', quantity: 
+1, unitPrice: Money.create(3.50, 'USD') })); 
+     
+    const result = receipt.applyNlpResult({ 
+      total: Money.create(5.00, 'USD'), // Wrong! Should be 3.50 + tax 
+      tax: Money.create(0.30, 'USD'), 
+      lineItems: receipt.lineItems 
+    }); 
+     
+    expect(result.isFailure()).toBe(true); 
+    expect(result.error).toBeInstanceOf(TotalsMismatchError); 
+  }); 
+}); 
+11.2 Integration Tests (Testcontainers) 
+TypeScriptCopy 
+describe('OCR Pipeline Integration', () => { 
+  let postgres: StartedPostgreSqlContainer; 
+  let redis: StartedRedisContainer; 
+  let rabbitmq: StartedRabbitMqContainer; 
+  let app: INestApplication; 
+   
+  beforeAll(async () => { 
+    // Start containers 
+    postgres = await new PostgreSqlContainer().start(); 
+    redis = await new RedisContainer().start(); 
+    rabbitmq = await new RabbitMqContainer().start(); 
+     
+    // Override NestJS providers 
+    const moduleRef = await Test.createTestingModule({ imports: 
+[AppModule] }) 
+      .overrideProvider('DATABASE_URL') 
+      .useValue(postgres.getConnectionUri()) 
+      .compile(); 
+       
+    app = moduleRef.createNestApplication(); 
+    await app.init(); 
+  }); 
+   
+  it('should process receipt end-to-end', async () => { 
+    // Upload receipt 
+    const uploadRes = await request(app.getHttpServer()) 
+      .post('/receipts') 
+      .attach('file', 'test/fixtures/walmart-receipt.jpg') 
+      .set('Authorization', `Bearer ${authToken}`) 
+      .set('X-Idempotency-Key', uuidv4()); 
+       
+    expect(uploadRes.status).toBe(202); 
+     
+    // Wait for processing (poll or consume event) 
+    const receipt = await waitForProcessing(uploadRes.body.id, { timeout: 
+30000 }); 
+     
+    expect(receipt.status).toBe('COMPLETED'); 
+    expect(receipt.merchantName).toBe('Walmart'); 
+    expect(receipt.totalAmount).toBeDefined(); 
+  }, 30000); 
+   
+  afterAll(async () => { 
+    await app.close(); 
+    await postgres.stop(); 
+    await redis.stop(); 
+    await rabbitmq.stop(); 
+  }); 
+}); 
+11.3 E2E Tests (Playwright) 
+●​ Critical user journeys: Upload → Process → View → Categorize → Dashboard 
+●​ Cross-browser testing (Chrome, Firefox, Safari) 
+●​ Mobile responsive testing 
+11.4 Performance Tests (k6) 
+JavaScriptCopy 
+// load-test.js 
+import http from 'k6/http'; 
+import { check, sleep } from 'k6'; 
+ 
+export const options = { 
+  stages: [ 
+    { duration: '2m', target: 100 },   // Ramp up 
+    { duration: '5m', target: 100 },   // Steady state 
+    { duration: '2m', target: 200 },   // Spike 
+    { duration: '2m', target: 0 },     // Ramp down 
+  ], 
+  thresholds: { 
+    http_req_duration: ['p(95)<200'],   // 95% under 200ms 
+    http_req_failed: ['rate<0.01'],     // < 1% errors 
+  }, 
+}; 
+ 
+export default function () { 
+  const res = http.get('https://api.budgetlens.io/receipts', { 
+    headers: { Authorization: `Bearer ${__ENV.API_TOKEN}` }, 
+  }); 
+   
+  check(res, { 
+    'status is 200': (r) => r.status === 200, 
+    'response time < 200ms': (r) => r.timings.duration < 200, 
+  }); 
+   
+  sleep(1); 
+} 
+ 
+12. CI/CD Pipeline (GitHub Actions) 
+yamlCopy 
+# .github/workflows/main.yml 
+name: BudgetLens CI/CD 
+ 
+on: 
+  push: 
+    branches: [main, develop] 
+  pull_request: 
+    branches: [main] 
+ 
+jobs: 
+  lint-and-format: 
+    runs-on: ubuntu-latest 
+    steps: 
+      - uses: actions/checkout@v4 
+      - uses: actions/setup-node@v4 
+        with: 
+          node-version: '20' 
+          cache: 'npm' 
+      - run: npm ci 
+      - run: npm run lint 
+      - run: npm run format:check 
+      - run: npm run typecheck 
+ 
+  unit-tests: 
+    runs-on: ubuntu-latest 
+    steps: 
+      - uses: actions/checkout@v4 
+      - run: npm ci 
+      - run: npm run test:unit -- --coverage 
+      - uses: codecov/codecov-action@v3 
+        with: 
+          files: ./coverage/lcov.info 
+          fail_ci_if_error: true 
+ 
+  integration-tests: 
+    runs-on: ubuntu-latest 
+    steps: 
+      - uses: actions/checkout@v4 
+      - run: npm ci 
+      - run: npm run test:integration 
+        env: 
+          TESTCONTAINERS_RYUK_DISABLED: true 
+ 
+  build-and-push: 
+    needs: [lint-and-format, unit-tests, integration-tests] 
+    runs-on: ubuntu-latest 
+    if: github.ref == 'refs/heads/main' 
+    steps: 
+      - uses: actions/checkout@v4 
+       
+      - name: Set up Docker Buildx 
+        uses: docker/setup-buildx-action@v3 
+       
+      - name: Login to ECR 
+        uses: aws-actions/amazon-ecr-login@v2 
+       
+      - name: Build and push API 
+        uses: docker/build-push-action@v5 
+        with: 
+          context: . 
+          file: ./docker/Dockerfile.api 
+          push: true 
+          tags: | 
+            ${{ secrets.ECR_REGISTRY }}/budgetlens-api:${{ github.sha }} 
+            ${{ secrets.ECR_REGISTRY }}/budgetlens-api:latest 
+          cache-from: type=gha 
+          cache-to: type=gha,mode=max 
+       
+      - name: Build and push Worker 
+        uses: docker/build-push-action@v5 
+        with: 
+          context: . 
+          file: ./docker/Dockerfile.worker 
+          push: true 
+          tags: | 
+            ${{ secrets.ECR_REGISTRY }}/budgetlens-worker:${{ github.sha 
+}} 
+            ${{ secrets.ECR_REGISTRY }}/budgetlens-worker:latest 
+ 
+  deploy-staging: 
+    needs: build-and-push 
+    runs-on: ubuntu-latest 
+    environment: staging 
+    steps: 
+      - name: Deploy to EKS 
+        run: | 
+          aws eks update-kubeconfig --region us-east-1 --name 
+budgetlens-staging 
+          kubectl set image deployment/api api=${{ secrets.ECR_REGISTRY 
+}}/budgetlens-api:${{ github.sha }} 
+          kubectl set image deployment/worker worker=${{ 
+secrets.ECR_REGISTRY }}/budgetlens-worker:${{ github.sha }} 
+          kubectl rollout status deployment/api 
+          kubectl rollout status deployment/worker 
+ 
+13. Deployment Architecture 
+13.1 Kubernetes (EKS) Manifests 
+yamlCopy 
+# api-deployment.yaml 
+apiVersion: apps/v1 
+kind: Deployment 
+metadata: 
+  name: budgetlens-api 
+spec: 
+  replicas: 3 
+  strategy: 
+    type: RollingUpdate 
+    rollingUpdate: 
+      maxSurge: 1 
+      maxUnavailable: 0 
+  selector: 
+    matchLabels: 
+      app: budgetlens-api 
+  template: 
+    metadata: 
+      labels: 
+        app: budgetlens-api 
+      annotations: 
+        prometheus.io/scrape: "true" 
+        prometheus.io/port: "3000" 
+    spec: 
+      containers: 
+        - name: api 
+          image: budgetlens-api:latest 
+          ports: 
+            - containerPort: 3000 
+          env: 
+            - name: NODE_ENV 
+              value: "production" 
+            - name: DATABASE_URL 
+              valueFrom: 
+                secretKeyRef: 
+                  name: budgetlens-secrets 
+                  key: database-url 
+          resources: 
+            requests: 
+              memory: "512Mi" 
+              cpu: "500m" 
+            limits: 
+              memory: "1Gi" 
+              cpu: "1000m" 
+          livenessProbe: 
+            httpGet: 
+              path: /health/live 
+              port: 3000 
+            initialDelaySeconds: 30 
+            periodSeconds: 10 
+          readinessProbe: 
+            httpGet: 
+              path: /health/ready 
+              port: 3000 
+            initialDelaySeconds: 5 
+            periodSeconds: 5 
+--- 
+apiVersion: autoscaling/v2 
+kind: HorizontalPodAutoscaler 
+metadata: 
+  name: budgetlens-api-hpa 
+spec: 
+  scaleTargetRef: 
+    apiVersion: apps/v1 
+    kind: Deployment 
+    name: budgetlens-api 
+  minReplicas: 3 
+  maxReplicas: 20 
+  metrics: 
+    - type: Resource 
+      resource: 
+        name: cpu 
+        target: 
+          type: Utilization 
+          averageUtilization: 70 
+    - type: Resource 
+      resource: 
+        name: memory 
+        target: 
+          type: Utilization 
+          averageUtilization: 80 
+  behavior: 
+    scaleUp: 
+      stabilizationWindowSeconds: 60 
+      policies: 
+        - type: Percent 
+          value: 100 
+          periodSeconds: 15 
+13.2 Worker Deployment 
+yamlCopy 
+# worker-deployment.yaml 
+apiVersion: apps/v1 
+kind: Deployment 
+metadata: 
+  name: budgetlens-worker 
+spec: 
+  replicas: 5 
+  template: 
+    spec: 
+      containers: 
+        - name: worker 
+          image: budgetlens-worker:latest 
+          env: 
+            - name: WORKER_CONCURRENCY 
+              value: "5" # Process 5 messages per worker instance 
+          resources: 
+            requests: 
+              memory: "1Gi" # Higher for OCR/AI processing 
+              cpu: "1000m" 
+            limits: 
+              memory: "4Gi" 
+              cpu: "2000m" 
+ 
+14. Disaster Recovery & Compliance 
+14.1 Backup Strategy 
+●​ PostgreSQL: Automated daily snapshots (AWS RDS), point-in-time recovery (35 
+days), cross-region replication 
+●​ S3: Versioning enabled, cross-region replication to budgetlens-receipts-dr 
+●​ Redis: Daily RDB snapshots, AOF persistence 
+14.2 GDPR Compliance 
+●​ Right to Access: GET /user/data-export generates ZIP with all user data 
+●​ Right to Erasure: DELETE /user/account triggers cascade deletion with 
+30-day soft-delete buffer 
+●​ Data Processing Agreement: Signed with AWS (DPA), OpenAI (Business 
+Associate Agreement) 
+●​ Encryption: All PII encrypted at rest (AES-256) and in transit (TLS 1.3) 
+14.3 Audit Trail 
+TypeScriptCopy 
+// Audit log table (immutable) 
+model AuditLog { 
+  id          String   @id @default(uuid()) 
+  userId      String 
+  action      String   // UPLOAD_RECEIPT, DELETE_RECEIPT, EXPORT_DATA 
+  resource    String   // Receipt:123, User:456 
+  ipAddress   String 
+  userAgent   String 
+  timestamp   DateTime @default(now()) 
+  metadata    Json     // Before/after state snapshots 
+   
+  @@index([userId, timestamp]) 
+  @@index([action, timestamp]) 
+  @@map("audit_logs") 
+} 
+ 
+15. Development Environment 
+15.1 Docker Compose (Local) 
+yamlCopy 
+# docker-compose.dev.yml 
+version: '3.8' 
+services: 
+  api: 
+    build: 
+      context: . 
+      dockerfile: docker/Dockerfile.dev 
+    ports: 
+      - "3000:3000" 
+    volumes: 
+      - .:/app 
+      - /app/node_modules 
+    environment: 
+      - NODE_ENV=development 
+      - 
+DATABASE_URL=postgresql://postgres:postgres@postgres:5432/budgetlens 
+      - REDIS_URL=redis://redis:6379 
+      - RABBITMQ_URL=amqp://rabbitmq:5672 
+    depends_on: 
+      - postgres 
+      - redis 
+      - rabbitmq 
+      - localstack 
+ 
+  worker: 
+    build: 
+      context: . 
+      dockerfile: docker/Dockerfile.worker.dev 
+    volumes: 
+      - .:/app 
+      - /app/node_modules 
+    environment: 
+      - NODE_ENV=development 
+      - WORKER_TYPE=ocr # or nlp, classification 
+    depends_on: 
+      - postgres 
+      - redis 
+      - rabbitmq 
+      - localstack 
+ 
+  postgres: 
+    image: postgres:15-alpine 
+    environment: 
+      POSTGRES_USER: postgres 
+      POSTGRES_PASSWORD: postgres 
+      POSTGRES_DB: budgetlens 
+    ports: 
+      - "5432:5432" 
+    volumes: 
+      - postgres_data:/var/lib/postgresql/data 
+ 
+  redis: 
+    image: redis:7-alpine 
+    ports: 
+      - "6379:6379" 
+ 
+  rabbitmq: 
+    image: rabbitmq:3.12-management-alpine 
+    ports: 
+      - "5672:5672" 
+      - "15672:15672" # Management UI 
+ 
+  localstack: 
+    image: localstack/localstack:latest 
+    ports: 
+      - "4566:4566" # S3, Textract mock 
+    environment: 
+      - SERVICES=s3,textract 
+      - DEFAULT_REGION=us-east-1 
+    volumes: 
+      - ./localstack-init.sh:/etc/localstack/init/ready.d/init-aws.sh 
+ 
+volumes: 
+  postgres_data: 
+15.2 Makefile Commands 
+makefileCopy 
+.PHONY: dev test lint migrate 
+ 
+dev: 
+​
+docker-compose -f docker-compose.dev.yml up -d 
+ 
+test: 
+​
+npm run test:unit 
+​
+npm run test:integration 
+ 
+lint: 
+​
+npm run lint 
+​
+npm run format:check 
+ 
+migrate: 
+​
+npx prisma migrate dev 
+ 
+studio: 
+​
+npx prisma studio 
+ 
+seed: 
+​
+npx ts-node prisma/seed.ts 
+ 
+16. Success Metrics & SLAs 
+Table 
+Metric 
+Target 
+Measurement 
+API Availability 
+99.9% 
+Uptime monitoring (Pingdom/DataDog) 
+API Response Time (p95) 
+< 200ms 
+Prometheus histograms 
+Receipt Processing Time 
+< 30s end-to-end 
+OpenTelemetry trace duration 
+OCR Accuracy 
+> 95% 
+Manual sampling + confidence scores 
+NLP Extraction Accuracy 
+> 90% 
+Ground truth comparison 
+Test Coverage (Domain/App) 
+100% 
+Jest coverage reports 
+Test Coverage (Overall) 
+> 80% 
+Jest coverage reports 
+Security Vulnerabilities 
+0 Critical/High 
+Snyk/Dependabot scans 
+ 
+This specification provides a complete blueprint for building BudgetLens as a 
+production-grade, scalable, and maintainable platform. Each section contains 
+actionable implementation details that senior engineers can execute directly while 
+maintaining architectural integrity across the three planned phases. 
+ 
+ 

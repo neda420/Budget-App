@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions", "fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider = "postgresql"
+  extensions = [uuid_ossp(map: "uuid-ossp")]
+}
+
+model User {
+  id                String            @id @default(uuid())
+  email             String            @unique
+  emailVerified     Boolean           @default(false)
+  passwordHash      String?           
+  subscriptionLevel SubscriptionLevel @default(FREE)
+  defaultCurrency   String            @default("USD")
+  monthlyQuota      Int               @default(50)
+  quotaResetDate    DateTime
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+   
+  receipts          Receipt[]
+  categories        ExpenseCategory[]
+  sessions          Session[]
+   
+  @@index([email])
+  @@index([subscriptionLevel])
+  @@map("users")
+}
+
+model Receipt {
+  id                String            @id @default(uuid())
+  userId            String
+  status            ProcessingStatus  @default(UPLOADED)
+   
+  // Storage
+  imageKey          String            @unique
+  imageBucket       String
+  imageChecksum     String            @unique
+  encryptionKeyId   String            
+   
+  // Extracted Data 
+  merchantName      String?
+  merchantAddress   String?
+  totalAmount       Decimal?          @db.Decimal(19, 4) 
+  taxAmount         Decimal?          @db.Decimal(19, 4)
+  subtotalAmount    Decimal?          @db.Decimal(19, 4)
+  currency          String?
+  issuedAt          DateTime?
+  processedAt       DateTime?
+   
+  // Relationships
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categoryId        String?
+  category          ExpenseCategory?  @relation(fields: [categoryId], references: [id])
+  lineItems         LineItem[]
+   
+  // Idempotency & Concurrency
+  idempotencyKey    String            @unique
+  version           Int               @default(0) 
+   
+  // Metadata
+  ocrEngine         String?
+  ocrConfidence     Float?
+  nlpModelVersion   String?
+  processingDurationMs Int?
+   
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+   
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt]) 
+  @@index([idempotencyKey])
+  @@map("receipts")
+}
+
+model LineItem {
+  id            String    @id @default(uuid())
+  receiptId     String
+  description   String
+  quantity      Decimal   @db.Decimal(10, 3)
+  unitPrice     Decimal   @db.Decimal(19, 4)
+  totalPrice    Decimal   @db.Decimal(19, 4)
+  categoryHint  String?
+   
+  receipt       Receipt   @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+   
+  @@index([receiptId])
+  @@map("line_items")
+}
+
+model ExpenseCategory {
+  id          String    @id @default(uuid())
+  name        String
+  color       String    @default("#3B82F6")
+  icon        String    @default("receipt")
+  type        CategoryType @default(SYSTEM)
+  userId      String?
+  parentId    String?
+   
+  user        User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  receipts    Receipt[]
+  parent      ExpenseCategory? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    ExpenseCategory[] @relation("CategoryHierarchy")
+   
+  @@unique([userId, name])
+  @@index([userId])
+  @@index([type])
+  @@map("expense_categories")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+   
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+   
+  @@index([token])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+enum SubscriptionLevel {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum ProcessingStatus {
+  UPLOADED
+  OCR_PENDING
+  OCR_PROCESSING
+  NLP_REFINING
+  CLASSIFYING
+  COMPLETED
+  FAILED
+  DELETED
+}
+
+enum CategoryType {
+  SYSTEM
+  USER_DEFINED
+}

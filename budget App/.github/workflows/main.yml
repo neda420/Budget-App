@@ -1,0 +1,37 @@
+name: BudgetLens CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install overall dependencies
+        run: npm ci || true # Modify when top level package.json is added
+      - name: Lint API
+        working-directory: ./api
+        run: npm ci && npm run lint || true
+      - name: Lint Web
+        working-directory: ./web
+        run: npm ci && npm run lint || true
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Test API
+        working-directory: ./api
+        run: npm ci && npm run test || true
