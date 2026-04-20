@@ -24,10 +24,13 @@ export class Email {
 export class Money {
   private constructor(
     public readonly amount: bigint,
-    public readonly currency: string
+    public readonly currency: string,
   ) {}
 
-  static create(amount: number, currency: string): Result<Money, ValidationError> {
+  static create(
+    amount: number,
+    currency: string,
+  ): Result<Money, ValidationError> {
     // Basic scaling to bigint assuming 4 decimal places for precision based on schema
     const scaledAmount = BigInt(Math.round(amount * 10000));
     return Result.ok(new Money(scaledAmount, currency.toUpperCase()));
@@ -58,11 +61,18 @@ export class ImageReference {
     public readonly bucket: string,
     public readonly key: string,
     public readonly checksum: string,
-    public readonly encryptionVersion: string
+    public readonly encryptionVersion: string,
   ) {}
 
-  static create(bucket: string, key: string, checksum: string, encryptionVersion: string): Result<ImageReference, Error> {
-    return Result.ok(new ImageReference(bucket, key, checksum, encryptionVersion));
+  static create(
+    bucket: string,
+    key: string,
+    checksum: string,
+    encryptionVersion: string,
+  ): Result<ImageReference, Error> {
+    return Result.ok(
+      new ImageReference(bucket, key, checksum, encryptionVersion),
+    );
   }
 
   getUri(): string {
