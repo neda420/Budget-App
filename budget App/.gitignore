@@ -31,8 +31,4 @@ Thumbs.db
 api/dist/
 api/node_modules/
 api/.env
-
-# Web specific
-web/.next/
-web/node_modules/
-web/.env.local
+api/generated/prisma/
