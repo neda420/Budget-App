@@ -5,6 +5,7 @@ import { AuthService } from '../../../infrastructure/auth/auth.service';
 const mockAuthService = {
   register: jest.fn(),
   login: jest.fn(),
+  refresh: jest.fn(),
 };
 
 describe('AuthController', () => {
@@ -31,8 +32,10 @@ describe('AuthController', () => {
   it('delegates login to AuthService', async () => {
     const expected = {
       accessToken: 'jwt',
+      refreshToken: 'refresh-token',
       tokenType: 'Bearer',
       expiresIn: 3600,
+      refreshExpiresIn: 2592000,
     };
     mockAuthService.login.mockResolvedValue(expected);
     const dto = { email: 'a@b.com', password: 'password1' };
@@ -40,11 +43,17 @@ describe('AuthController', () => {
     expect(mockAuthService.login).toHaveBeenCalledWith(dto);
   });
 
-  it('returns refresh message without calling AuthService', () => {
-    const result = controller.refresh();
-    expect(result).toEqual({
-      message: 'Use login to obtain a new access token',
-    });
-    expect(mockAuthService.register).not.toHaveBeenCalled();
+  it('delegates refresh to AuthService', async () => {
+    const expected = {
+      accessToken: 'jwt',
+      refreshToken: 'refresh-token-next',
+      tokenType: 'Bearer',
+      expiresIn: 3600,
+      refreshExpiresIn: 2592000,
+    };
+    mockAuthService.refresh.mockResolvedValue(expected);
+    const dto = { refreshToken: 'refresh-token' };
+    await expect(controller.refresh(dto)).resolves.toEqual(expected);
+    expect(mockAuthService.refresh).toHaveBeenCalledWith(dto.refreshToken);
   });
 });

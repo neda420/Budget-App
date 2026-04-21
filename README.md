@@ -18,6 +18,8 @@ npm run lint
 npm run test
 npm run test:e2e
 npm run build
+npm run prisma:generate
+npm run prisma:migrate:deploy
 ```
 
 ## Local services
@@ -26,3 +28,15 @@ npm run build
 cd "budget App"
 docker compose -f docker-compose.dev.yml up
 ```
+
+## Store release checklist (mobile + API)
+
+- Add missing iOS native project once in `budget App/web`:
+  - `npm run cap:add:ios`
+- Regenerate Android/iOS app icons and splash assets from `budget App/web/resources`:
+  - `npm run cap:assets`
+- Configure release signing secrets in GitHub:
+  - Android: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`
+  - iOS: `IOS_CERTIFICATE_P12_BASE64`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64`, `IOS_PROVISIONING_PROFILE_NAME`, `IOS_TEAM_ID`
+- Set production frontend API URL for builds:
+  - GitHub variable `API_URL` (used as `NEXT_PUBLIC_API_URL`).

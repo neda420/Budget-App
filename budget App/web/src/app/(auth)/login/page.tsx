@@ -4,7 +4,7 @@ import { useState, FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { authApi } from '@/lib/api';
-import { saveToken } from '@/lib/auth';
+import { saveRefreshToken, saveToken } from '@/lib/auth';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -20,6 +20,7 @@ export default function LoginPage() {
     try {
       const res = await authApi.login(email, password);
       saveToken(res.accessToken);
+      saveRefreshToken(res.refreshToken);
       router.replace('/dashboard');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed. Please try again.');

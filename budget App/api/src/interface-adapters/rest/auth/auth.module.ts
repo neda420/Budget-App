@@ -12,12 +12,18 @@ import { JwtStrategy } from '../../../infrastructure/auth/jwt.strategy';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (cfg: ConfigService) => ({
-        secret: cfg.get<string>('JWT_SECRET') ?? 'dev-secret-change-in-prod',
-        signOptions: {
-          expiresIn: Number(cfg.get<string>('JWT_EXPIRES_IN') ?? 3600),
-        },
-      }),
+      useFactory: (cfg: ConfigService) => {
+        const secret = cfg.get<string>('JWT_SECRET');
+        if (!secret) {
+          throw new Error('JWT_SECRET is not configured');
+        }
+        return {
+          secret,
+          signOptions: {
+            expiresIn: Number(cfg.get<string>('JWT_EXPIRES_IN') ?? 3600),
+          },
+        };
+      },
     }),
   ],
   controllers: [AuthController],

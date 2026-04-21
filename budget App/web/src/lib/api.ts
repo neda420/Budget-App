@@ -56,8 +56,10 @@ async function request<T>(
 
 export interface LoginResponse {
   accessToken: string;
+  refreshToken: string;
   tokenType: string;
   expiresIn: number;
+  refreshExpiresIn: number;
 }
 
 export const authApi = {
@@ -73,8 +75,16 @@ export const authApi = {
       body: JSON.stringify({ email, password, name }),
     });
   },
-  refresh(): Promise<LoginResponse> {
-    return request<LoginResponse>('/auth/refresh', { method: 'POST' });
+  refresh(refreshToken?: string): Promise<LoginResponse> {
+    const token =
+      refreshToken ??
+      (typeof window !== 'undefined'
+        ? localStorage.getItem('bl_refresh_token')
+        : null);
+    return request<LoginResponse>('/auth/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refreshToken: token }),
+    });
   },
 };
 

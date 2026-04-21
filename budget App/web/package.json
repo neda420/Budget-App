@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "cap:add:android": "npx cap add android",
+    "cap:add:ios": "npx cap add ios",
     "cap:sync": "npx cap sync",
+    "cap:assets": "npx @capacitor/assets generate --assetPath resources",
     "cap:ios": "npx cap open ios",
     "cap:android": "npx cap open android",
     "cap:build:android": "next build && npx cap sync android",
@@ -27,6 +30,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^7.0.0",
+    "@capacitor/assets": "^3.0.5",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
