@@ -4,7 +4,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider   = "postgresql"
   extensions = [uuid_ossp(map: "uuid-ossp")]
 }
 
@@ -12,11 +12,12 @@ model User {
   id                String            @id @default(uuid())
   email             String            @unique
   emailVerified     Boolean           @default(false)
-  passwordHash      String?           
+  name              String            @default("")
+  passwordHash      String
   subscriptionLevel SubscriptionLevel @default(FREE)
   defaultCurrency   String            @default("USD")
   monthlyQuota      Int               @default(50)
-  quotaResetDate    DateTime
+  quotaResetDate    DateTime          @default(now())
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
    
