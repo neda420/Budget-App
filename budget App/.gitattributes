@@ -1,0 +1,8 @@
+# Mark generated / auto-updated files so they are collapsed in PR diffs
+# and don't cause git-diff timeouts in CI tooling.
+
+package-lock.json -diff linguist-generated=true
+yarn.lock         -diff linguist-generated=true
+*.pbxproj         -diff linguist-generated=true
+gradlew           -diff linguist-generated=true
+gradlew.bat       -diff linguist-generated=true

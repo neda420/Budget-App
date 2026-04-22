@@ -32,3 +32,6 @@ api/dist/
 api/node_modules/
 api/.env
 api/generated/prisma/
+
+# Web build output (static export used by Capacitor – generated at build time)
+web/out/

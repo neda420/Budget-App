@@ -1,0 +1,44 @@
+{
+  "name": "budgetlens-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "cap:add:android": "npx cap add android",
+    "cap:add:ios": "npx cap add ios",
+    "cap:sync": "npx cap sync",
+    "cap:assets": "npx @capacitor/assets generate --assetPath resources",
+    "cap:ios": "npx cap open ios",
+    "cap:android": "npx cap open android",
+    "cap:build:android": "next build && npx cap sync android",
+    "cap:build:ios": "next build && npx cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/haptics": "^6.0.1",
+    "@capacitor/ios": "^6.2.0",
+    "@capacitor/keyboard": "^6.0.4",
+    "@capacitor/status-bar": "^6.0.1",
+    "next": "15.5.15",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "@capacitor/assets": "^3.0.5",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.15",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3"
+  }
+}

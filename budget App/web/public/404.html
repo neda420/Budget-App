@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!--
+    Capacitor / static-export SPA fallback.
+
+    When Capacitor (or any static file server) can't find a file for a deep-linked
+    path (e.g. /receipts/abc123), it serves this 404.html instead.
+    We extract the intended path and redirect to the app root, encoding the
+    destination in the URL hash so the app can navigate there after boot.
+  -->
+  <script>
+    (function () {
+      var path = window.location.pathname;
+      var hash = window.location.hash;
+      var query = window.location.search;
+      // Preserve the full path so the app can restore it via the hash
+      var encoded = encodeURIComponent(path + query + hash);
+      window.location.replace('/?redirect=' + encoded);
+    })();
+  </script>
+</head>
+<body></body>
+</html>

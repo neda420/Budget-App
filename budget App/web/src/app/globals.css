@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Safe-area insets for iOS notch / Android nav bar */
+:root {
+  --sat: env(safe-area-inset-top);
+  --sar: env(safe-area-inset-right);
+  --sab: env(safe-area-inset-bottom);
+  --sal: env(safe-area-inset-left);
+}
+
+html,
+body {
+  height: 100%;
+  overscroll-behavior: none; /* prevent rubber-band scroll in WebView */
+}
+
+/* Prevent text-size adjustment after device orientation changes */
+body {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}

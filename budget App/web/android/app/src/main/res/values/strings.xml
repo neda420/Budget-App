@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">BudgetLens</string>
+    <string name="title_activity_main">BudgetLens</string>
+    <string name="package_name">com.budgetlens.app</string>
+    <string name="custom_url_scheme">com.budgetlens.app</string>
+</resources>
